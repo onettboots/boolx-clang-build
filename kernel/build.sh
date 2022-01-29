@@ -23,16 +23,16 @@ function parse_parameters() {
                 shift
                 BUILD_FOLDER=${1}
                 ;;
+            "-k" | "--kernel-src")
+                shift
+                KERNEL_SRC=${1}
+                ;;
             "-p" | "--path-override")
                 shift
                 PATH_OVERRIDE=${1}
                 ;;
             "--pgo")
                 PGO=true
-                ;;
-            "-s" | "--src-folder")
-                shift
-                SRC_FOLDER=${1}
                 ;;
             "-t" | "--targets")
                 shift
@@ -42,6 +42,7 @@ function parse_parameters() {
                     case ${LLVM_TARGET} in
                         "AArch64") TARGETS+=("aarch64-linux-gnu") ;;
                         "ARM") TARGETS+=("arm-linux-gnueabi") ;;
+                        "Hexagon") TARGETS+=("hexagon-linux-gnu") ;;
                         "Mips") TARGETS+=("mipsel-linux-gnu") ;;
                         "PowerPC") TARGETS+=("powerpc-linux-gnu" "powerpc64-linux-gnu" "powerpc64le-linux-gnu") ;;
                         "RISCV") TARGETS+=("riscv64-linux-gnu") ;;
@@ -59,6 +60,7 @@ function set_default_values() {
     [[ -z ${TARGETS[*]} || ${TARGETS[*]} = "all" ]] && TARGETS=(
         "arm-linux-gnueabi"
         "aarch64-linux-gnu"
+        "hexagon-linux-gnu"
         "mipsel-linux-gnu"
         "powerpc-linux-gnu"
         "powerpc64-linux-gnu"
@@ -79,14 +81,27 @@ function setup_up_path() {
     [[ -n ${PATH_OVERRIDE} ]] && export PATH=${PATH_OVERRIDE}:${PATH}
 }
 
+# Turns 'patch -N' from a fatal error to an informational message
+function apply_patch {
+    PATCH_FILE=${1:?}
+    if ! PATCH_OUT=$(patch -Np1 <"${PATCH_FILE}"); then
+        PATCH_OUT_OK=$(echo "${PATCH_OUT}" | grep "Reversed (or previously applied) patch detected")
+        if [[ -n ${PATCH_OUT_OK} ]]; then
+            echo "${PATCH_FILE##*/}: ${PATCH_OUT_OK}"
+        else
+            echo "${PATCH_OUT}"
+            exit 2
+        fi
+    fi
+}
+
 function setup_krnl_src() {
-    # A kernel folder can be supplied via '-f' for testing the script
-    if [[ -n ${SRC_FOLDER} ]]; then
-        cd "${SRC_FOLDER}" || exit 1
+    # A kernel folder can be supplied via '-k' for testing the script
+    if [[ -n ${KERNEL_SRC} ]]; then
+        cd "${KERNEL_SRC}" || exit 1
     else
-        LINUX=linux-5.11.11
+        LINUX=linux-5.16
         LINUX_TARBALL=${KRNL}/${LINUX}.tar.xz
-        LINUX_PATCH=${KRNL}/${LINUX}-${CONFIG_TARGET}.patch
 
         # If we don't have the source tarball, download and verify it
         if [[ ! -f ${LINUX_TARBALL} ]]; then
@@ -102,25 +117,93 @@ function setup_krnl_src() {
         fi
 
         # If there is a patch to apply, remove the folder so that we can patch it accurately (we cannot assume it has already been patched)
-        [[ -f ${LINUX_PATCH} ]] && rm -rf ${LINUX}
+        PATCH_FILES=()
+        for SRC_FILE in "${KRNL}"/*; do
+            [[ ${SRC_FILE##*/} = *.patch ]] && PATCH_FILES+=("${SRC_FILE}")
+        done
+        [[ -n "${PATCH_FILES[*]}" ]] && rm -rf ${LINUX}
         [[ -d ${LINUX} ]] || { tar -xf "${LINUX_TARBALL}" || exit ${?}; }
         cd ${LINUX} || exit 1
-        [[ -f ${LINUX_PATCH} ]] && { patch -p1 <"${LINUX_PATCH}" || exit ${?}; }
+        for PATCH_FILE in "${PATCH_FILES[@]}"; do
+            apply_patch "${PATCH_FILE}"
+        done
+    fi
+}
+
+# Can the requested architecture use LLVM_IAS=1? This assumes that if the user
+# is passing in their own kernel source via '-k', it is either the same or a
+# newer version as the one that the script downloads to avoid having a two
+# variable matrix.
+function can_use_llvm_ias() {
+    local llvm_version
+    llvm_version=$("$TC_BLD"/clang-version.sh clang)
+
+    case $1 in
+        # https://github.com/ClangBuiltLinux/linux/issues?q=is%3Aissue+label%3A%22%5BARCH%5D+arm32%22+label%3A%22%5BTOOL%5D+integrated-as%22+
+        arm*)
+            if [[ $llvm_version -ge 130000 ]]; then
+                return 0
+            else
+                return 1
+            fi
+            ;;
+
+        # https://github.com/ClangBuiltLinux/linux/issues?q=is%3Aissue+label%3A%22%5BARCH%5D+arm64%22+label%3A%22%5BTOOL%5D+integrated-as%22+
+        # https://github.com/ClangBuiltLinux/linux/issues?q=is%3Aissue+label%3A%22%5BARCH%5D+x86_64%22+label%3A%22%5BTOOL%5D+integrated-as%22+
+        aarch64* | x86_64*)
+            if [[ $llvm_version -ge 110000 ]]; then
+                return 0
+            else
+                return 1
+            fi
+            ;;
+
+        hexagon* | mips* | riscv*)
+            # All supported versions of LLVM for building the kernel
+            return 0
+            ;;
+
+        powerpc* | s390*)
+            # No supported versions of LLVM for building the kernel
+            return 1
+            ;;
+    esac
+}
+
+# Get as command based on prefix and host architecture. See host_arch_target()
+# in build-binutils.py.
+function get_as() {
+    local host_target target_arch
+
+    case "$(uname -m)" in
+        armv7l) host_target=arm ;;
+        ppc64) host_target=powerpc64 ;;
+        ppc64le) host_target=powerpc64le ;;
+        ppc) host_target=powerpc ;;
+        *) host_target=$(uname -m) ;;
+    esac
+
+    # Turn triple (<arch>-<os>-<abi>) into <arch>
+    target_arch=${1%%-*}
+
+    if [[ "$target_arch" = "$host_target" ]]; then
+        echo "as"
+    else
+        echo "$1-as"
     fi
 }
 
 function check_binutils() {
     # Check for all binutils and build them if necessary
     BINUTILS_TARGETS=()
+
     for PREFIX in "${TARGETS[@]}"; do
-        # We assume an x86_64 host, should probably make this more generic in the future
-        if [[ ${PREFIX} = "x86_64-linux-gnu" ]]; then
-            COMMAND=as
-        else
-            COMMAND="${PREFIX}"-as
-        fi
-        command -v "${COMMAND}" &>/dev/null || BINUTILS_TARGETS+=("${PREFIX}")
+        # We do not need to check for binutils if we can use the integrated assembler
+        can_use_llvm_ias "$PREFIX" && continue
+
+        command -v "$(get_as "$PREFIX")" &>/dev/null || BINUTILS_TARGETS+=("${PREFIX}")
     done
+
     [[ -n "${BINUTILS_TARGETS[*]}" ]] && { "${TC_BLD}"/build-binutils.py -t "${BINUTILS_TARGETS[@]}" || exit ${?}; }
 }
 
@@ -129,28 +212,25 @@ function print_tc_info() {
     header "Toolchain information"
     clang --version
     for PREFIX in "${TARGETS[@]}"; do
+        can_use_llvm_ias "$PREFIX" && continue
+
         echo
-        case ${PREFIX} in
-            x86_64-linux-gnu) as --version ;;
-            *) "${PREFIX}"-as --version ;;
-        esac
+        "$(get_as "$PREFIX")" --version
     done
 }
 
+# Checks if clang can be used as a host toolchain. This command will error with
+# "No available targets are compatible with triple ..." if clang has been built
+# without support for the host target. This is better than keeping a map of
+# 'uname -m' against the target's name.
+function clang_supports_host_target() {
+    echo | clang -x c -c -o /dev/null - &>/dev/null
+}
+
 function build_kernels() {
-    # SC2191: The = here is literal. To assign by index, use ( [index]=value ) with no spaces. To keep as literal, quote it.
-    # shellcheck disable=SC2191
-    MAKE=(make -skj"$(nproc)" LLVM=1 O=out)
-    case "$(uname -m)" in
-        arm*) [[ ${TARGETS[*]} =~ arm ]] || NEED_GCC=true ;;
-        aarch64) [[ ${TARGETS[*]} =~ aarch64 ]] || NEED_GCC=true ;;
-        mips*) [[ ${TARGETS[*]} =~ mips ]] || NEED_GCC=true ;;
-        ppc*) [[ ${TARGETS[*]} =~ powerpc ]] || NEED_GCC=true ;;
-        s390*) [[ ${TARGETS[*]} =~ s390 ]] || NEED_GCC=true ;;
-        riscv*) [[ ${TARGETS[*]} =~ riscv ]] || NEED_GCC=true ;;
-        i*86 | x86*) [[ ${TARGETS[*]} =~ x86_64 ]] || NEED_GCC=true ;;
-    esac
-    ${NEED_GCC:=false} && MAKE+=(HOSTCC=gcc HOSTCXX=g++)
+    MAKE_BASE=(make -skj"$(nproc)" KCFLAGS=-Wno-error LLVM=1 O=out)
+
+    clang_supports_host_target || MAKE_BASE+=(HOSTCC=gcc HOSTCXX=g++)
 
     header "Building kernels"
 
@@ -161,79 +241,73 @@ function build_kernels() {
     set -x
 
     for TARGET in "${TARGETS[@]}"; do
+        MAKE=("${MAKE_BASE[@]}")
+        can_use_llvm_ias "$TARGET" || MAKE+=(CROSS_COMPILE="${TARGET}-" LLVM_IAS=0)
+
         case ${TARGET} in
             "arm-linux-gnueabi")
-                time \
-                    "${MAKE[@]}" \
-                    ARCH=arm \
-                    CROSS_COMPILE="${TARGET}-" \
-                    KCONFIG_ALLCONFIG=<(echo CONFIG_CPU_BIG_ENDIAN=n) \
-                    distclean "${CONFIG_TARGET}" zImage modules || exit ${?}
+                case ${CONFIG_TARGET} in
+                    defconfig)
+                        CONFIGS=(multi_v5_defconfig aspeed_g5_defconfig multi_v7_defconfig)
+                        ;;
+                    *)
+                        CONFIGS=("${CONFIG_TARGET}")
+                        ;;
+                esac
+                for CONFIG in "${CONFIGS[@]}"; do
+                    time "${MAKE[@]}" \
+                        ARCH=arm \
+                        distclean "${CONFIG}" all || exit ${?}
+                done
                 ;;
             "aarch64-linux-gnu")
-                time \
-                    "${MAKE[@]}" \
+                time "${MAKE[@]}" \
                     ARCH=arm64 \
-                    CROSS_COMPILE="${TARGET}-" \
-                    KCONFIG_ALLCONFIG=<(echo CONFIG_CPU_BIG_ENDIAN=n) \
-                    distclean "${CONFIG_TARGET}" Image.gz modules || exit ${?}
+                    distclean "${CONFIG_TARGET}" all || exit ${?}
+                ;;
+            "hexagon-linux-gnu")
+                time "${MAKE[@]}" \
+                    ARCH=hexagon \
+                    distclean defconfig all || exit ${?}
                 ;;
             "mipsel-linux-gnu")
-                time \
-                    "${MAKE[@]}" \
+                time "${MAKE[@]}" \
                     ARCH=mips \
-                    CROSS_COMPILE="${TARGET}-" \
-                    distclean malta_defconfig vmlinux modules || exit ${?}
+                    distclean malta_defconfig all || exit ${?}
                 ;;
             "powerpc-linux-gnu")
-                time \
-                    "${MAKE[@]}" \
+                time "${MAKE[@]}" \
                     ARCH=powerpc \
-                    CROSS_COMPILE="${TARGET}-" \
-                    distclean ppc44x_defconfig zImage modules || exit ${?}
+                    distclean ppc44x_defconfig all || exit ${?}
                 ;;
             "powerpc64-linux-gnu")
-                time \
-                    "${MAKE[@]}" \
+                time "${MAKE[@]}" \
                     ARCH=powerpc \
                     LD="${TARGET}-ld" \
-                    CROSS_COMPILE="${TARGET}-" \
-                    distclean pseries_defconfig disable-werror.config vmlinux modules || exit ${?}
+                    distclean pseries_defconfig disable-werror.config all || exit ${?}
                 ;;
             "powerpc64le-linux-gnu")
-                time \
-                    "${MAKE[@]}" \
+                time "${MAKE[@]}" \
                     ARCH=powerpc \
-                    CROSS_COMPILE="${TARGET}-" \
-                    distclean powernv_defconfig zImage.epapr modules || exit ${?}
+                    distclean powernv_defconfig all || exit ${?}
                 ;;
             "riscv64-linux-gnu")
-                RISCV_MAKE=(
-                    "${MAKE[@]}"
-                    ARCH=riscv
-                    CROSS_COMPILE="${TARGET}-"
-                    LD="${TARGET}-ld"
-                    LLVM_IAS=1
-                )
-                time "${RISCV_MAKE[@]}" distclean defconfig || exit ${?}
-                # https://github.com/ClangBuiltLinux/linux/issues/1143
-                grep -q "config EFI" arch/riscv/Kconfig && scripts/config --file out/.config -d EFI
-                time "${RISCV_MAKE[@]}" Image.gz modules || exit ${?}
+                time "${MAKE[@]}" \
+                    ARCH=riscv \
+                    distclean defconfig all || exit ${?}
                 ;;
             "s390x-linux-gnu")
-                time \
-                    "${MAKE[@]}" \
+                time "${MAKE[@]}" \
                     ARCH=s390 \
-                    CROSS_COMPILE="${TARGET}-" \
                     LD="${TARGET}-ld" \
                     OBJCOPY="${TARGET}-objcopy" \
                     OBJDUMP="${TARGET}-objdump" \
-                    distclean defconfig bzImage modules || exit ${?}
+                    distclean defconfig all || exit ${?}
                 ;;
             "x86_64-linux-gnu")
-                time \
-                    "${MAKE[@]}" \
-                    distclean "${CONFIG_TARGET}" bzImage modules || exit ${?}
+                time "${MAKE[@]}" \
+                    ARCH=x86_64 \
+                    distclean "${CONFIG_TARGET}" all || exit ${?}
                 ;;
         esac
     done

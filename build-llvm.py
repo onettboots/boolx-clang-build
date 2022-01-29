@@ -16,20 +16,22 @@ import urllib.request as request
 from urllib.error import URLError
 
 # This is a known good revision of LLVM for building the kernel
-# To bump this, run 'PATH_OVERRIDE=<path_to_updated_toolchain>/bin kernel/build.sh --allyesconfig'
-GOOD_REVISION = 'ecdae5df7da03c56d72796c0b1629edd0995548e'
+GOOD_REVISION = '08f70adedb775ce6d41a1f8ad75c4bac225efb5b'
 
 
 class Directories:
-    def __init__(self, build_folder, install_folder, linux_folder,
+
+    def __init__(self, build_folder, install_folder, linux_folder, llvm_folder,
                  root_folder):
         self.build_folder = build_folder
         self.install_folder = install_folder
         self.linux_folder = linux_folder
+        self.llvm_folder = llvm_folder
         self.root_folder = root_folder
 
 
 class EnvVars:
+
     def __init__(self, cc, cxx, ld):
         self.cc = cc
         self.cxx = cxx
@@ -196,6 +198,15 @@ def parse_parameters(root_folder):
 
                         """),
                         action="store_true")
+    parser.add_argument("-l",
+                        "--llvm-folder",
+                        help=textwrap.dedent("""\
+                        By default, the script will clone the llvm-project into the tc-build repo. If you have
+                        another LLVM checkout that you would like to work out of, pass it to this parameter.
+                        This can either be an absolute or relative path. Implies '--no-update'.
+
+                        """),
+                        type=str)
     parser.add_argument("-L",
                         "--linux-folder",
                         help=textwrap.dedent("""\
@@ -534,16 +545,16 @@ def ref_exists(repo, ref):
                           cwd=repo.as_posix()).returncode == 0
 
 
-def fetch_llvm_binutils(root_folder, update, shallow, ref):
+def fetch_llvm_binutils(root_folder, llvm_folder, update, shallow, ref):
     """
     Download llvm and binutils or update them if they exist
     :param root_folder: Working directory
+    :param llvm_folder: llvm-project repo directory
     :param update: Boolean indicating whether sources need to be updated or not
     :param ref: The ref to checkout the monorepo to
     """
-    p = root_folder.joinpath("llvm-project")
-    cwd = p.as_posix()
-    if p.is_dir():
+    cwd = llvm_folder.as_posix()
+    if llvm_folder.is_dir():
         if update:
             utils.print_header("Updating LLVM")
 
@@ -552,7 +563,8 @@ def fetch_llvm_binutils(root_folder, update, shallow, ref):
 
             # Explain to the user how to avoid issues if their ref does not exist with
             # a shallow clone.
-            if repo_is_shallow(p) and not ref_exists(p, ref):
+            if repo_is_shallow(llvm_folder) and not ref_exists(
+                    llvm_folder, ref):
                 utils.print_error(
                     "\nSupplied ref (%s) does not exist, cannot checkout." %
                     ref)
@@ -598,7 +610,7 @@ def fetch_llvm_binutils(root_folder, update, shallow, ref):
         subprocess.run([
             "git", "clone", *extra_args,
             "https://github.com/llvm/llvm-project",
-            p.as_posix()
+            llvm_folder.as_posix()
         ],
                        check=True)
         subprocess.run(["git", "checkout", ref], check=True, cwd=cwd)
@@ -843,11 +855,12 @@ def project_cmake_defines(args, stage):
             projects = "clang;lld"
             if args.pgo:
                 projects += ';compiler-rt'
+        elif instrumented_stage(args, stage):
+            projects = "clang;lld"
+        elif args.projects:
+            projects = args.projects
         else:
-            if instrumented_stage(args, stage):
-                projects = "clang;lld"
-            else:
-                projects = "clang;compiler-rt;lld;polly"
+            projects = "clang;compiler-rt;lld;polly"
 
     defines['LLVM_ENABLE_PROJECTS'] = projects
 
@@ -857,7 +870,6 @@ def project_cmake_defines(args, stage):
             defines['COMPILER_RT_BUILD_LIBFUZZER'] = 'OFF'
             # We only use compiler-rt for the sanitizers, disable some extra stuff we don't need
             # Chromium OS also does this: https://crrev.com/c/1629950
-            defines['COMPILER_RT_BUILD_BUILTINS'] = 'OFF'
             defines['COMPILER_RT_BUILD_CRT'] = 'OFF'
             defines['COMPILER_RT_BUILD_XRAY'] = 'OFF'
         # We don't need the sanitizers for the stage 1 bootstrap
@@ -878,7 +890,7 @@ def get_targets(args):
     elif args.full_toolchain:
         targets = "all"
     else:
-        targets = "AArch64;ARM;BPF;Mips;PowerPC;RISCV;SystemZ;X86"
+        targets = "AArch64;ARM;BPF;Hexagon;Mips;PowerPC;RISCV;SystemZ;X86"
 
     return targets
 
@@ -946,6 +958,7 @@ def stage_specific_cmake_defines(args, dirs, stage):
         if instrumented_stage(args, stage):
             defines['LLVM_BUILD_INSTRUMENTED'] = 'IR'
             defines['LLVM_BUILD_RUNTIME'] = 'OFF'
+            defines['LLVM_VP_COUNTERS_PER_SITE'] = '6'
 
         # If we are at the final stage, use PGO/Thin LTO if requested
         if stage == get_final_stage(args):
@@ -1047,7 +1060,7 @@ def invoke_cmake(args, dirs, env_vars, stage):
     if args.defines:
         for d in args.defines:
             cmake += ['-D' + d]
-    cmake += [dirs.root_folder.joinpath("llvm-project", "llvm").as_posix()]
+    cmake += [dirs.llvm_folder.joinpath("llvm").as_posix()]
 
     header_string, sub_folder = get_pgo_header_folder(stage)
 
@@ -1160,7 +1173,7 @@ def kernel_build_sh(args, config, dirs):
     if config != "defconfig":
         build_sh += ['--%s' % config]
     if dirs.linux_folder:
-        build_sh += ['-s', dirs.linux_folder.as_posix()]
+        build_sh += ['-k', dirs.linux_folder.as_posix()]
     show_command(args, build_sh)
     subprocess.run(build_sh, check=True, cwd=dirs.build_folder.as_posix())
 
@@ -1255,10 +1268,22 @@ def main():
         ref = GOOD_REVISION
     else:
         ref = args.branch
-    fetch_llvm_binutils(root_folder, not args.no_update, args.shallow_clone,
-                        ref)
+
+    if args.llvm_folder:
+        llvm_folder = pathlib.Path(args.llvm_folder)
+        if not llvm_folder.is_absolute():
+            llvm_folder = root_folder.joinpath(llvm_folder)
+        if not llvm_folder.exists():
+            utils.print_error("\nSupplied LLVM source (%s) does not exist!" %
+                              linux_folder.as_posix())
+            exit(1)
+    else:
+        llvm_folder = root_folder.joinpath("llvm-project")
+        fetch_llvm_binutils(root_folder, llvm_folder, not args.no_update,
+                            args.shallow_clone, ref)
     cleanup(build_folder, args.incremental)
-    dirs = Directories(build_folder, install_folder, linux_folder, root_folder)
+    dirs = Directories(build_folder, install_folder, linux_folder, llvm_folder,
+                       root_folder)
     do_multistage_build(args, dirs, env_vars)
 
 
