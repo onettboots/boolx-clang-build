@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -eo pipefail
+link_num=2
 
 # Function to show an informational message
 function msg() {
@@ -15,7 +16,7 @@ msg "Building LLVM..."
 ./build-llvm.py \
 	--clang-vendor "Maou" \
 	--targets "ARM;AArch64;X86" \
-	--defines "CMAKE_C_FLAGS=-O3 CMAKE_CXX_FLAGS=-O3" \
+	--defines "LLVM_PARALLEL_COMPILE_JOBS=$(nproc) LLVM_PARALLEL_LINK_JOBS=$link_num CMAKE_C_FLAGS=-O3 CMAKE_CXX_FLAGS=-O3" \
 	"$repo_flag" \
 	--pgo kernel-defconfig \
 	--lto full
