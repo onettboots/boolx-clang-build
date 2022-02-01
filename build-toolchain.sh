@@ -15,6 +15,7 @@ msg "Building LLVM..."
 ./build-llvm.py \
 	--clang-vendor "Maou" \
 	--targets "ARM;AArch64;X86" \
+	--defines "CMAKE_C_FLAGS=-O3 CMAKE_CXX_FLAGS=-O3" \
 	"$repo_flag" \
 	--pgo kernel-defconfig \
 	--lto full
