@@ -16,7 +16,7 @@ msg "Building LLVM..."
 ./build-llvm.py \
 	--clang-vendor "Maou" \
 	--targets "ARM;AArch64;X86" \
-	--defines "LLVM_PARALLEL_COMPILE_JOBS=$(nproc) LLVM_PARALLEL_LINK_JOBS=$link_num CMAKE_C_FLAGS=-O3 CMAKE_CXX_FLAGS=-O3" \
+	--defines "LLVM_PARALLEL_COMPILE_JOBS=$(nproc) LLVM_PARALLEL_LINK_JOBS=$link_num CMAKE_C_FLAGS=-O3 CMAKE_CXX_FLAGS=-O3 LLVM_USE_LINKER=lld LLVM_ENABLE_LLD=ON" \
 	"$repo_flag" \
 	--pgo kernel-defconfig \
 	--lto full
