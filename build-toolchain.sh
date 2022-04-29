@@ -19,7 +19,8 @@ msg "Building LLVM..."
 	"$repo_flag" \
 	--projects "clang;lld;polly;compiler-rt;bolt" \
 	--pgo kernel-defconfig \
-	--lto thin
+	--lto thin \
+	--bolt
 
 # Build binutils
 msg "Building binutils..."
