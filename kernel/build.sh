@@ -347,7 +347,7 @@ function build_kernels() {
                 time "${make[@]}" \
                     ARCH=powerpc \
                     LD="$target-ld" \
-                    distclean pseries_defconfig disable-werror.config all || exit
+                    distclean ppc64_guest_defconfig disable-werror.config all || exit
                 ;;
 
             powerpc64le-linux-gnu)
