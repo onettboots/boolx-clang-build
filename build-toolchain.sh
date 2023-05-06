@@ -13,8 +13,9 @@ function msg() {
 # Build LLVM
 msg "Building LLVM..."
 ./build-llvm.py \
-	--clang-vendor "Maou" \
+	--clang-vendor "Bool-X" \
 	--targets "ARM;AArch64;X86" \
+	--branch "llvmorg-17-init" \
 	--defines "LLVM_PARALLEL_COMPILE_JOBS=$(nproc) LLVM_PARALLEL_LINK_JOBS=$(nproc) CMAKE_C_FLAGS=-O3 CMAKE_CXX_FLAGS=-O3 LLVM_USE_LINKER=lld LLVM_ENABLE_LLD=ON" \
 	"$repo_flag" \
 	--projects "clang;lld;polly;compiler-rt;bolt" \
