@@ -27,6 +27,7 @@ class LLVMBuilder(Builder):
 
         self.bolt = False
         self.bolt_builder = None
+        self.build_targets = ['all']
         self.ccache = False
         self.check_targets = []
         # Removes system dependency on terminfo to keep the dynamic library
@@ -142,7 +143,7 @@ class LLVMBuilder(Builder):
             raise RuntimeError('BOLT requested without a builder?')
 
         build_start = time.time()
-        ninja_cmd = ['ninja', '-C', self.folders.build]
+        ninja_cmd = ['ninja', '-C', self.folders.build, *self.build_targets]
         self.run_cmd(ninja_cmd)
 
         if self.check_targets:
