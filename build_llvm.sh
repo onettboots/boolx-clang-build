@@ -75,7 +75,7 @@ if [[ ${USE_JEMALLOC} -eq 1 ]]; then
         cd "${BUILDDIR}"
         jemalloc_fetch_vars
         if [[ ${NO_JEMALLOC} -eq 1 ]]; then
-            bash "${BUILDDIR}/build_jemalloc.sh" --shallow-clone
+            bash "${BUILDDIR}/build_jemalloc.sh" --shallow-clone --avx2
         fi
     }
 fi
