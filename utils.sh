@@ -21,7 +21,7 @@ export USE_JEMALLOC=0
 export JEMALLOC_BUILD_DIR="${BUILDDIR}/jemalloc-build"
 
 export NO_AVX_FLAGS="-mtune=generic"
-export BARE_AVX_FLAGS="-mavx -mavx2 -mfma -msse3 -mssse3 -msse4.1 -msse4.2 -mf16c -mprefer-avx128 -mprefer-vector-width=128"
+export BARE_AVX_FLAGS="-mavx -mavx2 -mfma -msse3 -mssse3 -msse4.1 -msse4.2 -mf16c -mprefer-vector-width=128"
 export AVX_FLAGS="-mtune=haswell ${BARE_AVX_FLAGS}"
 
 export COMMON_OPT_FLAGS_LD="-Wl,-O3,--sort-common,--as-needed,-z,now,--lto-O3,--strip-debug"
