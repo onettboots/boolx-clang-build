@@ -13,7 +13,7 @@ for arg in "$@"; do
         "--use-jemalloc")
             USE_JEMALLOC=1
             ;;
-        "--avx2"
+        "--avx2")
             BINUTILS_AVX_FLAGS="${AVX_FLAGS}"
             ;;
     esac

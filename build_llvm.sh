@@ -46,9 +46,9 @@ for arg in "$@"; do
             ;;
         "--ci-run")
             CI=1
-            LLVM_LD_JOBS=16
+            LLVM_LD_JOBS="$(getconf _NPROCESSORS_ONLN)"
             ;;
-        "--avx2"
+        "--avx2")
             LLVM_AVX_FLAGS="${AVX_FLAGS}"
             ;;
         *)

@@ -13,7 +13,7 @@ for arg in "$@"; do
         "--no-update")
             NO_UPDATE=1
             ;;
-        "--avx2"
+        "--avx2")
             JEMALLOC_AVX_FLAGS="${AVX_FLAGS}"
             ;;
     esac
