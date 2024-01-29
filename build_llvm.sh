@@ -15,6 +15,8 @@ LLVM_DIR="${BUILDDIR}/llvm-project"
 LLVM_BUILD="${BUILDDIR}/llvm-build"
 LLVM_PROJECT="${LLVM_DIR}/llvm"
 
+LLVM_AVX_FLAGS="${NO_AVX_FLAGS}"
+
 for arg in "$@"; do
     case "${arg}" in
         "--incremental")
@@ -44,7 +46,10 @@ for arg in "$@"; do
             ;;
         "--ci-run")
             CI=1
-            LLVM_LD_JOBS=16
+            LLVM_LD_JOBS="$(getconf _NPROCESSORS_ONLN)"
+            ;;
+        "--avx2")
+            LLVM_AVX_FLAGS="${AVX_FLAGS}"
             ;;
         *)
             echo "Invalid argument passed: ${arg}"
@@ -52,10 +57,6 @@ for arg in "$@"; do
             ;;
     esac
 done
-
-# DO NOT CHANGE
-USE_SYSTEM_BINUTILS_64=1
-USE_SYSTEM_BINUTILS_32=1
 
 # Clear some variables if unused
 clear_if_unused "POLLY_OPT" "POLLY_OPT_FLAGS"
@@ -69,32 +70,12 @@ if [[ ${CI} -eq 1 ]]; then
 		Build Date: <code>$(date +"%Y-%m-%d %H:%M")</code>"
 fi
 
-# Function build temporary binutils for kernel profiling
-build_temp_binutils() {
-
-    currdir=$(pwd)
-    rm -rf "${TEMP_BINTUILS_BUILD}" && mkdir -p "${TEMP_BINTUILS_BUILD}"
-    if [[ $1 == "aarch64-linux-gnu" ]]; then
-        USE_SYSTEM_BINUTILS_64=0
-        target="ARM64"
-    else
-        USE_SYSTEM_BINUTILS_32=0
-        target="ARM"
-    fi
-    cd "${BUILDDIR}"
-    bash build_binutils.sh --targets="${target}" --install-dir="${TEMP_BINTUILS_INSTALL}" --build-dir="${TEMP_BINTUILS_BUILD}" --no-update
-    cd "${currdir}"
-    unset currdir
-    unset target
-    rm -rf "${TEMP_BINTUILS_BUILD}"
-}
-
 if [[ ${USE_JEMALLOC} -eq 1 ]]; then
     build_jemalloc() {
         cd "${BUILDDIR}"
         jemalloc_fetch_vars
         if [[ ${NO_JEMALLOC} -eq 1 ]]; then
-            bash "${BUILDDIR}/build_jemalloc.sh" --shallow-clone
+            bash "${BUILDDIR}/build_jemalloc.sh" --shallow-clone --avx2
         fi
     }
 fi
@@ -124,9 +105,8 @@ if [[ ${BOLT_OPT} -eq 1 ]]; then
             echo "Training arm64"
             cd "${KERNEL_DIR}"
             perf record --output "${BOLT_PROFILES}"/perf.data --event cycles:u --branch-filter any,u -- make distclean defconfig all -sj"$(getconf _NPROCESSORS_ONLN)" \
-                "${KMAKEFLAGS[@]}" \
                 ARCH=arm64 \
-                CROSS_COMPILE=aarch64-linux-gnu- || (
+                "${KMAKEFLAGS[@]}" || (
                 echo "Kernel Build failed!"
                 exit 1
             )
@@ -264,12 +244,6 @@ else
     fi
 fi
 
-if [[ ${SHALLOW_CLONE} -eq 1 ]]; then
-    bash build_binutils.sh --sync-source-only --shallow-clone
-else
-    bash build_binutils.sh --sync-source-only
-fi
-
 if [[ ${CLEAN_BUILD} -eq 1 ]]; then
     rm -rf "${LLVM_BUILD}"
 fi
@@ -277,17 +251,31 @@ mkdir -p "${LLVM_BUILD}"
 
 rm -rf "${KERNEL_DIR}" && get_linux_tarball "${LINUX_VER}"
 
-mkdir -p "${BUILDDIR}/mlgo-models/x86"
-cd "${BUILDDIR}/mlgo-models/x86"
+rm -rf "${BUILDDIR}/mlgo-models/"
+
+mkdir -p "${BUILDDIR}/mlgo-models/x86/regalloc"
+cd "${BUILDDIR}/mlgo-models/x86/regalloc"
 wget "https://github.com/google/ml-compiler-opt/releases/download/regalloc-evict-v1.0/regalloc-evict-e67430c-v1.0.tar.gz"
 tar -xf "regalloc-evict-e67430c-v1.0.tar.gz"
 rm -rf "regalloc-evict-e67430c-v1.0.tar.gz"
 
-mkdir -p "${BUILDDIR}/mlgo-models/arm64"
-cd "${BUILDDIR}/mlgo-models/arm64"
+mkdir -p "${BUILDDIR}/mlgo-models/x86/inline"
+cd "${BUILDDIR}/mlgo-models/x86/inline"
+wget "https://github.com/google/ml-compiler-opt/releases/download/inlining-Oz-v1.1/inlining-Oz-99f0063-v1.1.tar.gz"
+tar -xf "inlining-Oz-99f0063-v1.1.tar.gz"
+rm -rf "inlining-Oz-99f0063-v1.1.tar.gz"
+
+mkdir -p "${BUILDDIR}/mlgo-models/arm64/regalloc"
+cd "${BUILDDIR}/mlgo-models/arm64/regalloc"
 wget "https://github.com/dakkshesh07/mlgo-linux-kernel/releases/download/regalloc-evict-v6.6.8-arm64-1/regalloc-evict-linux-v6.6.8-arm64-1.tar.zst"
 tar -xf "regalloc-evict-linux-v6.6.8-arm64-1.tar.zst"
 rm -rf "regalloc-evict-linux-v6.6.8-arm64-1.tar.zst"
+
+mkdir -p "${BUILDDIR}/mlgo-models/arm64/inline/model"
+cd "${BUILDDIR}/mlgo-models/arm64/inline/model"
+wget "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/mlgo-models/arm64/inlining-Oz-chromium.tar.gz"
+tar -xf "inlining-Oz-chromium.tar.gz"
+rm -rf "inlining-Oz-chromium.tar.gz"
 
 
 echo "Patching LLVM"
@@ -323,7 +311,7 @@ else
     LINKER_DIR="${LLVM_BIN_DIR}"
 fi
 
-OPT_FLAGS="-march=native -mtune=native ${COMMON_OPT_FLAGS[*]}"
+OPT_FLAGS="-march=native -mtune=native ${BARE_AVX_FLAGS} ${COMMON_OPT_FLAGS[*]}"
 OPT_FLAGS_LD="${COMMON_OPT_FLAGS_LD} -fuse-ld=${LINKER_DIR}/${LINKER}"
 
 if [[ ${USE_JEMALLOC} -eq 1 ]]; then
@@ -367,7 +355,8 @@ cmake -G Ninja -Wno-dev --log-level=NOTICE \
     -DLLVM_ENABLE_WARNINGS=OFF \
     -DLLVM_ENABLE_LTO=Thin \
     -DTENSORFLOW_AOT_PATH=$(python3 -c "import tensorflow; import os; print(os.path.dirname(tensorflow.__file__))") \
-    -DLLVM_RAEVICT_MODEL_PATH="${BUILDDIR}/mlgo-models/x86/model" \
+    -DLLVM_RAEVICT_MODEL_PATH="${BUILDDIR}/mlgo-models/x86/regalloc/model" \
+    -DLLVM_INLINER_MODEL_PATH="${BUILDDIR}/mlgo-models/x86/inline/model" \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache \
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DCMAKE_C_COMPILER="${LLVM_BIN_DIR}"/clang \
@@ -427,7 +416,7 @@ else
     LINKER_DIR="${STAGE1}"
 fi
 
-OPT_FLAGS="-march=x86-64 -mtune=generic -mllvm -regalloc-enable-advisor=release ${COMMON_OPT_FLAGS[*]}"
+OPT_FLAGS="-march=x86-64 ${LLVM_AVX_FLAGS} ${COMMON_OPT_FLAGS[*]}"
 OPT_FLAGS_LD="${COMMON_OPT_FLAGS_LD} -Wl,-mllvm,-regalloc-enable-advisor=release -fuse-ld=${LINKER_DIR}/${LINKER}"
 
 if [[ ${USE_JEMALLOC} -eq 1 ]]; then
@@ -451,8 +440,6 @@ cmake -G Ninja -Wno-dev --log-level=ERROR \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_ENABLE_WARNINGS=OFF \
     -DLLVM_ENABLE_PROJECTS='clang;lld' \
-    -DLLVM_BINUTILS_INCDIR="${BUILDDIR}/binutils-gdb/include" \
-    -DLLVM_ENABLE_PLUGINS=ON \
     -DCLANG_ENABLE_ARCMT=OFF \
     -DCLANG_ENABLE_STATIC_ANALYZER=OFF \
     -DCLANG_PLUGIN_SUPPORT=OFF \
@@ -464,7 +451,8 @@ cmake -G Ninja -Wno-dev --log-level=ERROR \
     -DLLVM_ENABLE_TERMINFO=OFF \
     -DLLVM_ENABLE_LTO=Thin \
     -DTENSORFLOW_AOT_PATH=$(python3 -c "import tensorflow; import os; print(os.path.dirname(tensorflow.__file__))") \
-    -DLLVM_RAEVICT_MODEL_PATH="${BUILDDIR}/mlgo-models/arm64/model" \
+    -DLLVM_RAEVICT_MODEL_PATH="${BUILDDIR}/mlgo-models/arm64/regalloc/model" \
+    -DLLVM_INLINER_MODEL_PATH="${BUILDDIR}/mlgo-models/arm64/inline/model" \
     -DCMAKE_C_COMPILER="${STAGE1}"/clang \
     -DCMAKE_CXX_COMPILER="${STAGE1}"/clang++ \
     -DCMAKE_AR="${STAGE1}"/llvm-ar \
@@ -506,28 +494,7 @@ rm -rf "${PROFILES:?}/"*
 echo "Stage 2: Build End"
 echo "Stage 2: PGO Train Start"
 
-rm -rf "${TEMP_BINTUILS_INSTALL}" && mkdir -p "${TEMP_BINTUILS_INSTALL}"
-command -v aarch64-linux-gnu-as &>/dev/null || build_temp_binutils aarch64-linux-gnu
-command -v arm-linux-gnueabi-as &>/dev/null || build_temp_binutils arm-linux-gnueabi
-
-if [[ ${USE_SYSTEM_BINUTILS_64} -eq 1 ]]; then
-    BINTUILS_64_BIN_DIR=$(readlink -f "$(which aarch64-linux-gnu-as)" | rev | cut -d'/' -f2- | rev)
-else
-    BINTUILS_64_BIN_DIR="${TEMP_BINTUILS_INSTALL}/bin"
-fi
-
-if [[ ${USE_SYSTEM_BINUTILS_32} -eq 1 ]]; then
-    BINTUILS_32_BIN_DIR=$(readlink -f "$(which arm-linux-gnueabi-as)" | rev | cut -d'/' -f2- | rev)
-else
-    BINTUILS_32_BIN_DIR="${TEMP_BINTUILS_INSTALL}/bin"
-fi
-
-if [[ ${USE_SYSTEM_BINUTILS_64} -eq 1 ]] && [[ ${USE_SYSTEM_BINUTILS_64} -eq 1 ]]; then
-    rm -rf "${TEMP_BINTUILS_INSTALL}"
-    rm -rf "${TEMP_BINTUILS_BUILD}"
-fi
-
-export PATH="${STAGE2}:${BINTUILS_64_BIN_DIR}:${BINTUILS_32_BIN_DIR}:${STOCK_PATH}"
+export PATH="${STAGE2}:${STOCK_PATH}"
 export LD_LIBRARY_PATH="${STAGE2}/../lib"
 
 # Train PGO
@@ -567,8 +534,8 @@ echo "Training x86"
 time make distclean defconfig all -sj"$(getconf _NPROCESSORS_ONLN)" "${KMAKEFLAGS[@]}" || exit ${?}
 
 echo "Training arm64"
-time make distclean defconfig all -sj"$(getconf _NPROCESSORS_ONLN)" ARCH=arm64 KCFLAGS="-mllvm -regalloc-enable-advisor=release -Wl,-mllvm,-regalloc-enable-advisor=release" \
-    "${KMAKEFLAGS[@]}" CROSS_COMPILE=aarch64-linux-gnu- || exit ${?}
+time make distclean defconfig all -sj"$(getconf _NPROCESSORS_ONLN)" ARCH=arm64 KCFLAGS="-Wl,-mllvm,-regalloc-enable-advisor=release" \
+    "${KMAKEFLAGS[@]}" || exit ${?}
 
 unset LLD_IN_TEST
 
@@ -576,9 +543,6 @@ unset LLD_IN_TEST
 cd "${PROFILES}"
 "${STAGE2}"/llvm-profdata merge -output=clang.profdata ./*
 
-if [[ ${BOLT_OPT} -eq 0 ]]; then
-    rm -rf "${TEMP_BINTUILS_INSTALL}"
-fi
 echo "Stage 2: PGO Training End"
 
 # Stage 3 (built with PGO profile data)
@@ -587,10 +551,12 @@ echo "Stage 3 Build: Start"
 export PATH="${MODDED_PATH}"
 export LD_LIBRARY_PATH="${STAGE1}/../lib"
 
-OPT_FLAGS="-march=x86-64 -mtune=generic -mllvm -regalloc-enable-advisor=release ${COMMON_OPT_FLAGS[*]}"
+OPT_FLAGS="-march=x86-64 ${LLVM_AVX_FLAGS} ${COMMON_OPT_FLAGS[*]}"
 if [[ ${POLLY_OPT} -eq 1 ]]; then
     OPT_FLAGS="${OPT_FLAGS} ${POLLY_OPT_FLAGS[*]}"
 fi
+
+OPT_FLAGS_LD+="-Wl,-mllvm -enable-ext-tsp-block-placement -Wl,-mllvm,-enable-split-machine-functions"
 
 if [[ ${LLVM_OPT} -eq 1 ]]; then
     OPT_FLAGS="${OPT_FLAGS} ${LLVM_OPT_FLAGS[*]} -mllvm -enable-chr"
@@ -625,8 +591,6 @@ cmake -G Ninja -Wno-dev --log-level=ERROR \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_ENABLE_WARNINGS=OFF \
     -DLLVM_ENABLE_PROJECTS='clang;lld;compiler-rt;polly;openmp' \
-    -DLLVM_BINUTILS_INCDIR="${BUILDDIR}/binutils-gdb/include" \
-    -DLLVM_ENABLE_PLUGINS=ON \
     -DCLANG_ENABLE_ARCMT=OFF \
     -DCLANG_ENABLE_STATIC_ANALYZER=OFF \
     -DCLANG_PLUGIN_SUPPORT=OFF \
@@ -641,7 +605,8 @@ cmake -G Ninja -Wno-dev --log-level=ERROR \
     -DLLVM_ENABLE_TERMINFO=OFF \
     -DLLVM_ENABLE_LTO=Thin \
     -DTENSORFLOW_AOT_PATH=$(python3 -c "import tensorflow; import os; print(os.path.dirname(tensorflow.__file__))") \
-    -DLLVM_RAEVICT_MODEL_PATH="${BUILDDIR}/mlgo-models/arm64/model" \
+    -DLLVM_RAEVICT_MODEL_PATH="${BUILDDIR}/mlgo-models/arm64/regalloc/model" \
+    -DLLVM_INLINER_MODEL_PATH="${BUILDDIR}/mlgo-models/arm64/inline/model" \
     -DCMAKE_C_COMPILER="${STAGE1}"/clang \
     -DCMAKE_CXX_COMPILER="${STAGE1}"/clang++ \
     -DCMAKE_AR="${STAGE1}"/llvm-ar \
@@ -683,7 +648,7 @@ if [[ ${BOLT_OPT} -eq 1 ]]; then
     BOLT_PROFILES_LLD="${OUT}/bolt-prof-lld"
     rm -rf "${BOLT_PROFILES}" && rm -rf "${BOLT_PROFILES_LLD}"
     mkdir -p "${BOLT_PROFILES}" && mkdir -p "${BOLT_PROFILES_LLD}"
-    export PATH="${STAGE3}:${BINTUILS_64_BIN_DIR}:${BINTUILS_32_BIN_DIR}:${STOCK_PATH}"
+    export PATH="${STAGE3}:${STOCK_PATH}"
     export LD_LIBRARY_PATH="${STAGE3}/../lib"
     if [[ ${CI} -eq 1 ]]; then
         echo "Performing BOLT with instrumenting!"
@@ -706,7 +671,6 @@ if [[ ${BOLT_OPT} -eq 1 ]]; then
             )
         fi
     fi
-    rm -rf "${TEMP_BINTUILS_INSTALL}"
 fi
 
 echo "Moving stage 3 install dir to build dir"
