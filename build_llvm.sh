@@ -76,7 +76,7 @@ clear_if_unused "BOLT_OPT" "BOLT_ARGS"
 # Send a notification if building on CI
 if [[ ${CI} -eq 1 ]]; then
     tgsend "\
-        <b>🔨 Neutron Clang Build Started</b>
+        <b>🔨 Boolx Clang Build Started</b>
 		Build Date: <code>$(date +"%Y-%m-%d %H:%M")</code>"
 fi
 
@@ -363,8 +363,8 @@ cmake -G Ninja -Wno-dev --log-level=NOTICE \
     -DCOMPILER_RT_BUILD_SANITIZERS=OFF \
     -DCOMPILER_RT_BUILD_XRAY=OFF \
     -DCOMPILER_RT_BUILD_LIBFUZZER=OFF \
-    -DCLANG_VENDOR="Neutron" \
-    -DLLD_VENDOR="Neutron" \
+    -DCLANG_VENDOR="Boolx" \
+    -DLLD_VENDOR="Boolx" \
     -DLLVM_ENABLE_BACKTRACES=OFF \
     -DLLVM_ENABLE_WARNINGS=OFF \
     -DLLVM_ENABLE_LTO=Thin \
@@ -455,8 +455,8 @@ if [[ ${LLVM_OPT} -eq 1 ]]; then
 fi
 
 cmake -G Ninja -Wno-dev --log-level=ERROR \
-    -DCLANG_VENDOR="Neutron" \
-    -DLLD_VENDOR="Neutron" \
+    -DCLANG_VENDOR="Boolx" \
+    -DLLD_VENDOR="Boolx" \
     -DLLVM_TARGETS_TO_BUILD='AArch64;ARM;X86' \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_ENABLE_WARNINGS=OFF \
@@ -618,8 +618,8 @@ else
 fi
 cd "${OUT}"
 cmake -G Ninja -Wno-dev --log-level=ERROR \
-    -DCLANG_VENDOR="Neutron" \
-    -DLLD_VENDOR="Neutron" \
+    -DCLANG_VENDOR="Boolx" \
+    -DLLD_VENDOR="Boolx" \
     -DLLVM_TARGETS_TO_BUILD='AArch64;ARM;X86' \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_ENABLE_WARNINGS=OFF \
